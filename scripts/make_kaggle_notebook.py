@@ -57,12 +57,15 @@ def sh(cmd):
     print(f"$ {cmd}")
     subprocess.run(cmd, shell=True, check=False)
 
+# bitsandbytes la BAT BUOC: LLMTranslator (Qwen-7B) dung luong tu hoa 4-bit.
+# Thieu no thi lenh dich se vo GIUA CHUNG, sau khi da ton hang chuc phut GPU.
 sh(f"{sys.executable} -m pip install -q -U transformers accelerate sentencepiece")
+sh(f"{sys.executable} -m pip install -q -U bitsandbytes")
 sh(f"{sys.executable} -m pip install -q sentence-transformers datasets underthesea")
 """),
 
     code("""
-import torch, transformers
+import torch, transformers, importlib
 print("torch       :", torch.__version__)
 print("transformers:", transformers.__version__)
 print("CUDA        :", torch.cuda.is_available())
@@ -72,6 +75,21 @@ if torch.cuda.is_available():
         print(f"  GPU {i}: {p.name}  {p.total_memory/1e9:.1f} GB")
 else:
     print("  !! Chua bat GPU — buoc dich se rat cham. Hay bat GPU roi chay lai.")
+
+# Kiem tra cac goi bat buoc CO THAT SU import duoc, khong chi la pip bao thanh cong
+print()
+missing = []
+for mod, why in [("bitsandbytes", "luong tu hoa 4-bit cho Qwen-7B"),
+                 ("sentence_transformers", "cham diem LaBSE"),
+                 ("datasets", "nap OPUS-100 / IWSLT")]:
+    try:
+        importlib.import_module(mod)
+        print(f"  OK   {mod}")
+    except Exception as e:
+        missing.append(mod)
+        print(f"  HONG {mod:<22} ({why}) -> {type(e).__name__}")
+if missing:
+    raise SystemExit(f"Thieu goi: {missing}. Chay lai o cai dat ben tren.")
 """),
 
     md("""

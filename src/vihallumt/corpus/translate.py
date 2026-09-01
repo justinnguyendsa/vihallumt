@@ -34,6 +34,21 @@ NLLB_LANG: dict[str, str] = {
 }
 
 
+def _bitsandbytes_available() -> bool:
+    """`bitsandbytes` có sẵn không — quyết định có lượng tử hoá 4-bit được không.
+
+    Phải gọi thẳng thư viện chứ không thể dựa vào việc import config thành công:
+    ``from transformers import BitsAndBytesConfig`` **vẫn chạy trót lọt** khi
+    chưa cài bitsandbytes, lỗi chỉ nổ ra tận lúc ``from_pretrained``. Đó chính
+    là cách nó làm hỏng một lượt chạy GPU 40 phút trên Kaggle.
+    """
+    try:
+        import bitsandbytes  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class DecodingConfig:
     """Cấu hình giải mã. Tên gọi được ghi vào dữ liệu để phân tích về sau."""
@@ -265,12 +280,22 @@ class LLMTranslator(Translator):
         if self._model is None:
             kwargs: dict[str, Any] = {"dtype": "auto"}
             if self.load_in_4bit and torch.cuda.is_available():
-                from transformers import BitsAndBytesConfig
+                if _bitsandbytes_available():
+                    from transformers import BitsAndBytesConfig
 
-                kwargs["quantization_config"] = BitsAndBytesConfig(
-                    load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
-                )
+                    kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+                    )
+                else:
+                    # Thieu bitsandbytes -> chay fp16 thay vi vo giua chung.
+                    # Ton bo nho gap ~4 lan nhung van chay duoc; dung 40 phut
+                    # GPU roi bao loi thi te hon nhieu.
+                    print(f"    [canh bao] chua cai bitsandbytes -> {self.name} "
+                          f"chay fp16 thay vi 4-bit (ton bo nho hon). "
+                          f"Cai bang: pip install bitsandbytes")
+                    kwargs["dtype"] = torch.float16
+
             self._model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
             if "quantization_config" not in kwargs:
                 self._model = self._model.to(
@@ -387,9 +412,18 @@ def probe_translator(name: str) -> tuple[bool, str]:
 
     try:
         AutoTokenizer.from_pretrained(model_ids[name])
-        return True, "ok"
     except Exception as exc:
         return False, f"{type(exc).__name__}: {str(exc)[:90]}"
+
+    # Mo hinh LLM lon can luong tu hoa 4-bit de vua GPU. Bao truoc o day, chu
+    # khong de no vo giua chung sau khi da dich xong hang nghin cau.
+    import torch
+
+    needs_quantisation = name.startswith("qwen")
+    if needs_quantisation and torch.cuda.is_available() and not _bitsandbytes_available():
+        return True, ("ok (CANH BAO: thieu bitsandbytes -> se chay fp16, "
+                      "ton bo nho gap ~4 lan. Cai: pip install bitsandbytes)")
+    return True, "ok"
 
 
 #: Kế hoạch sinh Tập A: cặp (hệ dịch, cấu hình giải mã) và tỉ trọng câu.

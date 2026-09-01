@@ -249,14 +249,24 @@ class LLMDetector(Detector):
                 kwargs["device_map"] = self.device or ("auto" if has_cuda else "cpu")
 
             if self.config.load_in_4bit and has_cuda:
-                from transformers import BitsAndBytesConfig
+                from vihallumt.corpus.translate import _bitsandbytes_available
 
-                kwargs["quantization_config"] = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True,
-                )
+                if _bitsandbytes_available():
+                    from transformers import BitsAndBytesConfig
+
+                    kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                    )
+                else:
+                    # Thiếu bitsandbytes -> chạy fp16 thay vì vỡ. Tốn bộ nhớ
+                    # gấp ~4 lần nhưng vẫn chạy được; dừng giữa chừng sau khi
+                    # đã chấm điểm hàng nghìn câu thì tệ hơn nhiều.
+                    print(f"    [canh bao] chua cai bitsandbytes -> {self.model_id} "
+                          f"chay fp16 thay vi 4-bit. Cai: pip install bitsandbytes")
+                    kwargs["dtype"] = torch.float16
 
             self._model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
 

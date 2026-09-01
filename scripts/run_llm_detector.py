@@ -50,7 +50,9 @@ RESULTS = ROOT / "results"
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", required=True, help="Dinh danh mo hinh tren HuggingFace")
+    ap.add_argument("--model", required=True,
+                    help="Dinh danh mo hinh tren HuggingFace. Nhieu mo hinh thi "
+                         "ngan cach bang dau phay.")
     ap.add_argument("--split", default="validation", choices=["validation", "test"])
     ap.add_argument("--grid", action="store_true",
                     help="Quet toan bo luoi bien the prompt (P1 Bang 6)")
@@ -134,6 +136,11 @@ def main() -> int:
 
     summary_rows, score_cols = [], {}
 
+    # Nạp mô hình MỘT lần rồi dùng lại cho mọi biến thể prompt. Nếu tạo
+    # detector mới mỗi lần thì mỗi biến thể lại nạp lại trọng số — với mô hình
+    # 7B trên Kaggle đó là hàng phút bị đốt vô ích cho mỗi ô trong lưới.
+    shared_model = shared_tokenizer = None
+
     for variant in variants_to_run(args):
         name = variant_name(variant["prompt_id"], variant["cot"], variant["language"])
         cfg = LLMConfig(
@@ -142,11 +149,15 @@ def main() -> int:
             batch_size=args.batch_size,
             load_in_4bit=not args.no_4bit,
         )
-        det = LLMDetector(args.model, cfg)
+        det = LLMDetector(args.model, cfg,
+                          model=shared_model, tokenizer=shared_tokenizer)
 
         t0 = time.perf_counter()
         scores = det.score(pairs)
         elapsed = time.perf_counter() - t0
+
+        # Giữ lại mô hình đã nạp cho biến thể kế tiếp
+        shared_model, shared_tokenizer = det._model, det._tokenizer
 
         row, _ = evaluate(data, scores, threshold=None)
         row["variant"] = name

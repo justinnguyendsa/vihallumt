@@ -61,6 +61,9 @@ from vihallumt.detectors.ngram import NGramRepetitionDetector
 
 DATA = ROOT / "data" / "vihallumt"
 RESULTS = ROOT / "results"
+#: Ket qua dich trung gian, ghi sau moi to hop (he dich, giai ma).
+#: Chay lai se tu bo qua phan da xong.
+CKPT = DATA / "_checkpoints"
 
 #: Tỉ lệ câu nguồn được đưa vào nhánh perturbed.
 #: Giữ nhỏ vì phần này không dùng cho kết quả chính.
@@ -84,6 +87,8 @@ def parse_args() -> argparse.Namespace:
                     help="Chi xu ly N cau (de kiem tra nhanh duong ong)")
     ap.add_argument("--plan", default="default", choices=["default", "smoke"],
                     help="'smoke' chi dung NLLB-600M — de kiem tra duong ong")
+    ap.add_argument("--fresh", action="store_true",
+                    help="Xoa checkpoint va dich lai tu dau")
     return ap.parse_args()
 
 
@@ -147,8 +152,15 @@ def translate_pool(
     batch_size: int,
     seed: int,
     plan,
+    ckpt_dir: Path | None = None,
 ) -> pd.DataFrame:
-    """Dịch từng câu bằng tổ hợp (hệ dịch, giải mã) đã phân bổ cho nó."""
+    """Dịch từng câu bằng tổ hợp (hệ dịch, giải mã) đã phân bổ cho nó.
+
+    Ghi checkpoint sau **mỗi** tổ hợp (hệ dịch, giải mã). Dịch là bước tốn thời
+    gian nhất — 20–30 phút GPU cho một lượt đầy đủ. Nếu hỏng ở phút thứ 35 mà
+    không có checkpoint thì mất trắng toàn bộ; với hạn mức GPU của Kaggle, đó
+    là mất nguyên một chu kỳ làm việc. Chạy lại sẽ tự bỏ qua phần đã xong.
+    """
     specs = assign_generation_specs(len(df), seed, plan)
     df = df.copy()
     df["gen_tag"] = [s.tag for s in specs]
@@ -159,21 +171,43 @@ def translate_pool(
     translators = build_translators(specs)
     df["mt_text"] = ""
 
+    if ckpt_dir is not None:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+
     # Gom theo (hệ dịch, giải mã) để mỗi tổ hợp chỉ nạp mô hình một lần
     for (translator, decoding, off_target), group in df.groupby(
         ["translator", "decoding", "force_wrong_target"], dropna=False
     ):
         off = off_target if isinstance(off_target, str) else None
-        model = translators[(translator, off)]
         cfg = get_decoding(decoding)
         tag = f"{translator}/{decoding}" + (f"+off{off}" if off else "")
-        print(f"    dich {len(group):>5} cau bang {tag}")
 
+        ckpt = None
+        if ckpt_dir is not None:
+            key = f"{src_lang}-{tgt_lang}__{translator}__{decoding}__{off or 'none'}"
+            ckpt = ckpt_dir / f"{key}.jsonl"
+
+        # Đã dịch xong tổ hợp này ở lần chạy trước -> dùng lại
+        if ckpt is not None and ckpt.exists():
+            cached = pd.read_json(ckpt, lines=True)
+            if len(cached) == len(group):
+                df.loc[group.index, "mt_text"] = cached["mt_text"].to_numpy()
+                print(f"    [da co] bo qua {tag} — dung lai {len(cached)} cau tu checkpoint")
+                continue
+            print(f"    [checkpoint hong] {tag}: co {len(cached)} cau nhung can "
+                  f"{len(group)} — dich lai")
+
+        print(f"    dich {len(group):>5} cau bang {tag}", flush=True)
+        model = translators[(translator, off)]
         outputs = model.translate(
             group["src_text"].tolist(), src_lang, tgt_lang,
             decoding=cfg, batch_size=batch_size,
         )
         df.loc[group.index, "mt_text"] = outputs
+
+        if ckpt is not None:
+            pd.DataFrame({"cand_key": group.index, "mt_text": outputs}).to_json(
+                ckpt, orient="records", lines=True, force_ascii=False)
 
     return df
 
@@ -249,7 +283,8 @@ def build_direction(args: argparse.Namespace, src_lang: str, tgt_lang: str,
           f"perturbed: {(pool.perturbation == 'perturbed').sum()}")
 
     print("[3/5] Dich (can GPU) ...")
-    pool = translate_pool(pool, src_lang, tgt_lang, args.batch_size, args.seed, gen_plan)
+    pool = translate_pool(pool, src_lang, tgt_lang, args.batch_size, args.seed,
+                          gen_plan, ckpt_dir=CKPT)
 
     print("[4/5] Cham diem so bo ...")
     pool = score_candidates(pool)
@@ -269,12 +304,29 @@ def main() -> int:
     DATA.mkdir(parents=True, exist_ok=True)
     RESULTS.mkdir(exist_ok=True)
 
+    if args.fresh and CKPT.exists():
+        import shutil
+        shutil.rmtree(CKPT)
+        print("Da xoa checkpoint, se dich lai tu dau.\n")
+
     gen_plan = resolve_plan(args.plan)
 
     frames = []
     for direction in args.directions.split(","):
         src_lang, tgt_lang = (p.strip().upper() for p in direction.split("-"))
-        frames.append(build_direction(args, src_lang, tgt_lang, gen_plan))
+
+        # Checkpoint muc huong dich: da lam xong ca huong nay thi dung lai luon
+        done_path = CKPT / f"direction_{src_lang}-{tgt_lang}.jsonl"
+        if done_path.exists():
+            print(f"\n[da co] Huong {src_lang}->{tgt_lang} da hoan tat o lan chay "
+                  f"truoc — dung lai tu checkpoint.")
+            frames.append(pd.read_json(done_path, lines=True))
+            continue
+
+        frame = build_direction(args, src_lang, tgt_lang, gen_plan)
+        CKPT.mkdir(parents=True, exist_ok=True)
+        frame.to_json(done_path, orient="records", lines=True, force_ascii=False)
+        frames.append(frame)
 
     candidates = pd.concat(frames, ignore_index=True)
     candidates.insert(0, "cand_id", [f"c{i:06d}" for i in range(len(candidates))])
@@ -321,6 +373,9 @@ def main() -> int:
     print(f"Da ghi: {RESULTS / 'corpus_a_stats.csv'}")
     print()
     print("Buoc tiep theo: chay cong cu gan nhan tren to_annotate.jsonl")
+    print()
+    print(f"(Checkpoint nam o {CKPT} — chay lai se dung lai chung. "
+          f"Muon dich lai tu dau thi them --fresh.)")
     return 0
 
 

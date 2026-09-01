@@ -17,8 +17,13 @@ datasets>=2.19
 sentence-transformers>=3.0
 accelerate>=0.30
 huggingface-hub>=0.24
+# sentencepiece: tokenizer cua NLLB. Thieu no thi NLLB khong nap duoc.
+sentencepiece>=0.2
 
-# --- Luong tu hoa (chi can khi chay LLM 7B tren T4) ---
+# --- Luong tu hoa (BAT BUOC khi chay LLM 7B tren GPU) ---
+# Thieu goi nay thi lenh dich vo GIUA CHUNG luc nap Qwen-7B, sau khi da ton
+# hang chuc phut GPU. Ma nguon co suy giam mem sang fp16, nhung fp16 ton bo
+# nho gap ~4 lan nen de tran GPU.
 bitsandbytes>=0.43 ; platform_system != "Darwin"
 
 # --- Tieng Viet ---
