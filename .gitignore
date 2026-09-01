@@ -1,0 +1,41 @@
+# Du lieu tho - tai bang scripts/download_halomi.sh
+data/raw/
+*.zip
+
+# Paper tham khao va tai lieu mon hoc - khong day len kho ma nguon
+papers/
+*.docx
+*.xlsx
+
+# Nhan da gan - la du lieu, phat hanh rieng qua HF Datasets
+data/vihallumt/candidates.jsonl
+
+# Ket qua nang
+results/**/*.png
+!results/figures/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# Moi truong
+.venv/
+venv/
+.env
+
+# He dieu hanh
+.DS_Store
+Thumbs.db
+
+# Paper
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz
