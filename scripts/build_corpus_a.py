@@ -63,7 +63,14 @@ DATA = ROOT / "data" / "vihallumt"
 RESULTS = ROOT / "results"
 #: Ket qua dich trung gian, ghi sau moi to hop (he dich, giai ma).
 #: Chay lai se tu bo qua phan da xong.
-CKPT = DATA / "_checkpoints"
+#:
+#: QUAN TRONG tren Kaggle: dat thu muc nay NGOAI kho ma nguon da clone. O clone
+#: trong notebook xoa sach thu muc du an truoc khi clone lai, nen checkpoint de
+#: ben trong do se bi xoa dung luc can dung nhat. Dat bang bien moi truong
+#: VIHALLUMT_CKPT hoac tham so --ckpt-dir.
+import os as _os
+
+CKPT = Path(_os.environ.get("VIHALLUMT_CKPT", DATA / "_checkpoints"))
 
 #: Tỉ lệ câu nguồn được đưa vào nhánh perturbed.
 #: Giữ nhỏ vì phần này không dùng cho kết quả chính.
@@ -89,6 +96,9 @@ def parse_args() -> argparse.Namespace:
                     help="'smoke' chi dung NLLB-600M — de kiem tra duong ong")
     ap.add_argument("--fresh", action="store_true",
                     help="Xoa checkpoint va dich lai tu dau")
+    ap.add_argument("--ckpt-dir", default=None,
+                    help="Thu muc checkpoint. Tren Kaggle hay dat NGOAI kho ma "
+                         "nguon da clone, vi o clone xoa sach thu muc du an.")
     return ap.parse_args()
 
 
@@ -303,6 +313,11 @@ def main() -> int:
     args = parse_args()
     DATA.mkdir(parents=True, exist_ok=True)
     RESULTS.mkdir(exist_ok=True)
+
+    global CKPT
+    if args.ckpt_dir:
+        CKPT = Path(args.ckpt_dir)
+    print(f"Checkpoint: {CKPT}")
 
     if args.fresh and CKPT.exists():
         import shutil
