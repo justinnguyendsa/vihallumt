@@ -8,7 +8,9 @@ HalOmi, rồi mở rộng sang tiếng Việt bằng bộ ngữ liệu `ViHalluM
 
 | | |
 |---|---|
+| Kho mã nguồn | https://github.com/justinnguyendsa/vihallumt |
 | Đề cương chi tiết | [`docs/DE-CUONG.md`](docs/DE-CUONG.md) |
+| Việc cần làm | [`docs/VIEC-CAN-LAM.md`](docs/VIEC-CAN-LAM.md) |
 | Paper tham khảo | `papers/2024.findings-emnlp.564.pdf`, `papers/2025.naacl-long.175.pdf` |
 | Trạng thái | Tuần 1 — đã tái lập baseline paper gốc; đã có 4 bộ phát hiện và bộ sinh ngữ liệu |
 | Kiểm thử | 370 test, chạy hết trên CPU trong ~3 giây |
