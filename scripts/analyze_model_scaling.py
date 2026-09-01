@@ -103,6 +103,37 @@ def build_curve(runs: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def prompt_language_effect(runs: pd.DataFrame) -> pd.DataFrame:
+    """So sánh prompt tiếng Anh với tiếng Việt, tách MCC khỏi ROC-AUC.
+
+    Vì sao phải tách: MCC ở đây phụ thuộc ngưỡng, mà ngưỡng lại hiệu chỉnh
+    in-sample. ROC-AUC thì **không phụ thuộc ngưỡng** — nó chỉ đo chất lượng
+    *xếp hạng*. Nếu một biến thể hơn về MCC nhưng không hơn về AUC thì cái
+    "hơn" đó chỉ là may mắn về hiệu chỉnh, không phải hiểu tác vụ tốt hơn.
+
+    Chỉ so các cặp **cùng prompt, cùng mô hình, khác ngôn ngữ hướng dẫn**.
+    """
+    runs = runs.copy()
+    runs["prompt_id"] = runs["variant"].str.split("[").str[0]
+
+    wide = runs.pivot_table(
+        index=["size_b", "prompt_id"], columns="language",
+        values=["mcc_macro", "roc_auc"],
+    ).dropna()
+    if wide.empty:
+        return wide
+
+    out = pd.DataFrame({
+        "mcc_en": wide[("mcc_macro", "en")],
+        "mcc_vi": wide[("mcc_macro", "vi")],
+        "auc_en": wide[("roc_auc", "en")],
+        "auc_vi": wide[("roc_auc", "vi")],
+    })
+    out["mcc_delta"] = out["mcc_vi"] - out["mcc_en"]
+    out["auc_delta"] = out["auc_vi"] - out["auc_en"]
+    return out.round(3)
+
+
 def plot_curve(curve: pd.DataFrame, path: Path) -> None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.4))
 
@@ -195,8 +226,29 @@ def main() -> int:
     print("  -> Khoang trong toi 0.81 cua Llama3-70B chinh la thu can GPU de lap day.")
     print()
 
+    effect = prompt_language_effect(runs)
+    if not effect.empty:
+        effect.to_csv(RESULTS / "prompt_language_effect.csv")
+        print("-" * 88)
+        print("PROMPT TIENG ANH vs TIENG VIET (chi cac cap cung prompt, cung mo hinh)")
+        print("-" * 88)
+        print(effect.to_string())
+        print()
+        n_mcc = int((effect["mcc_delta"] > 0).sum())
+        n_auc = int((effect["auc_delta"] > 0).sum())
+        print(f"  Tieng Viet hon ve MCC     : {n_mcc}/{len(effect)} cap")
+        print(f"  Tieng Viet hon ve ROC-AUC : {n_auc}/{len(effect)} cap")
+        print()
+        print("  MCC phu thuoc nguong (hieu chinh in-sample); AUC thi khong.")
+        print("  Hon MCC ma khong hon AUC = chi may man ve hieu chinh, khong phai")
+        print("  hieu tac vu tot hon. Gia thuyet 'prompt ban ngu giup ich' chi kiem")
+        print("  dinh duoc tren du lieu TIENG VIET that (ViHalluMT), khong phai o day.")
+        print()
+
     plot_curve(curve, FIGURES / "model_scaling.png")
     print(f"Da ghi: {RESULTS / 'model_scaling.csv'}")
+    if not effect.empty:
+        print(f"Da ghi: {RESULTS / 'prompt_language_effect.csv'}")
     print(f"Da ghi: {FIGURES / 'model_scaling.png'}")
     return 0
 

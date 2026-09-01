@@ -1,0 +1,2 @@
+variant,threshold,mcc_macro,mcc_pooled,f1,precision,recall,accuracy,roc_auc,pred_positive_rate,unparsed_rate,prompt_id,cot,language,seconds,sec_per_sentence
+p3[en],0.7773,0.3055,0.2883,0.3636,0.2917,0.4828,0.8372,0.7496,0.1595,0.0033,p3,none,en,4108.0,13.648
