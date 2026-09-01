@@ -9,7 +9,16 @@ Tổng thời gian: **khoảng 13–15 giờ**, trong đó 10–12 giờ là gá
 
 ## Phần 0 — Ngay bây giờ (khoảng 30 phút)
 
-### ☐ 0.1. Tạo kho mã nguồn trên GitHub  ⏱ 5 phút
+### ☑ 0.1. Tạo kho mã nguồn trên GitHub — **ĐÃ XONG**
+
+Kho: **https://github.com/justinnguyendsa/vihallumt** (hiện đang **public** để
+Kaggle clone được). Nhớ chuyển lại private sau khi chạy Kaggle xong:
+
+```bash
+gh repo edit justinnguyendsa/vihallumt --visibility private --accept-visibility-change-consequences
+```
+
+<details><summary>Cách đã làm (để tham khảo)</summary>
 
 Đây vừa là sản phẩm bắt buộc phải nộp (yêu cầu II.4), vừa là cách notebook
 Kaggle lấy được mã nguồn.
@@ -29,10 +38,10 @@ thêm giảng viên làm collaborator:
 gh repo edit --visibility public --accept-visibility-change-consequences
 ```
 
-Sau khi tạo xong, **ghi lại URL kho** — bạn sẽ dán nó vào notebook ở bước 1.2.
-
 > `.gitignore` đã loại sẵn `papers/`, `data/raw/`, và các tệp `.docx`/`.xlsx`
 > của môn học nên kho sẽ gọn.
+
+</details>
 
 ### ☐ 0.2. Mở khoá FLORES-200 trên HuggingFace  ⏱ 3 phút
 
@@ -76,20 +85,11 @@ Nhắn lại cho tôi:
 3. Panel bên phải → *Settings* → **Accelerator: GPU T4 x2**
 4. *Settings* → **Internet: On** (bắt buộc, để tải mô hình từ HuggingFace)
 
-### ☐ 1.2. Sửa URL kho mã nguồn  ⏱ 1 phút
+### ☑ 1.2. Sửa URL kho mã nguồn — **ĐÃ XONG**
 
-Trong ô số 4 của notebook, sửa dòng:
-
-```python
-REPO_URL = "https://github.com/<tai-khoan>/<ten-kho>.git"   # <-- SUA
-```
-
-thành URL kho bạn vừa tạo ở bước 0.1.
-
-> Nếu kho để **private**, `git clone` trên Kaggle sẽ hỏi mật khẩu và treo.
-> Hai cách xử lý: (a) tạm chuyển kho sang public trong lúc chạy, hoặc
-> (b) dùng **Cách B** trong notebook — nén `src/` và `scripts/` thành `.zip`,
-> tạo Kaggle Dataset rồi *Add Data* vào notebook.
+`REPO_URL` trong notebook đã điền sẵn kho thật, và kho đang public nên Kaggle
+clone được. Đã kiểm chứng bằng phép clone ẩn danh với config sạch: thành công,
+45 tệp.
 
 ### ☐ 1.3. (Nếu làm bước 0.2) Thêm HF token  ⏱ 2 phút
 
