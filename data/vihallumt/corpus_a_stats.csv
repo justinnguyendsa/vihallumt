@@ -1,0 +1,4 @@
+selection,n,mean_agg_score,min_agg_score,max_agg_score
+biased,280,0.5853,0.5044,0.7047
+uniform,210,0.481,0.2571,0.7679
+worst,210,0.8074,0.7749,0.9912

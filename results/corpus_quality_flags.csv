@@ -1,0 +1,4 @@
+selection,empty,copied_source,oscillatory,wrong_language,low_similarity,length_blowup,any_flag
+biased,0.0,0.0,0.0,5.4,5.4,0.0,10.7
+uniform,0.0,0.0,0.0,4.3,2.4,0.0,6.7
+worst,0.0,0.0,1.4,2.4,51.9,22.4,63.3
