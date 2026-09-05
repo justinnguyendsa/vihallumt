@@ -143,16 +143,15 @@ def assign_generation_specs(n: int, seed: int, plan) -> list:
 
 
 def build_translators(specs) -> dict:
-    """Khởi tạo mỗi hệ dịch đúng một lần, dùng lại cho mọi cấu hình giải mã.
+    """Khởi tạo mỗi hệ dịch đúng một lần, khoá theo **tên mô hình**.
 
-    Riêng nhánh ép sai ngôn ngữ đích cần đối tượng riêng vì token BOS khác.
+    Không tách theo `force_wrong_target`: ép sai ngôn ngữ đích chỉ đổi token
+    BOS lúc sinh chứ không đổi trọng số, nên nó là tham số của lần gọi. Trước
+    đây khoá theo cả hai khiến nhánh off-target nạp thêm một bản sao đầy đủ
+    của cùng bộ trọng số — 2,4 GB GPU bị đốt vô ích.
     """
-    needed = {(s.translator, s.force_wrong_target) for s in specs}
-    out = {}
-    for name, off_target in sorted(needed, key=lambda t: (t[0], t[1] or "")):
-        kwargs = {"force_wrong_target": off_target} if off_target else {}
-        out[(name, off_target)] = make_translator(name, **kwargs)
-    return out
+    return {name: make_translator(name)
+            for name in sorted({s.translator for s in specs})}
 
 
 def translate_pool(
@@ -184,40 +183,52 @@ def translate_pool(
     if ckpt_dir is not None:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # Gom theo (hệ dịch, giải mã) để mỗi tổ hợp chỉ nạp mô hình một lần
-    for (translator, decoding, off_target), group in df.groupby(
-        ["translator", "decoding", "force_wrong_target"], dropna=False
-    ):
-        off = off_target if isinstance(off_target, str) else None
-        cfg = get_decoding(decoding)
-        tag = f"{translator}/{decoding}" + (f"+off{off}" if off else "")
+    # Gom theo HỆ DỊCH ở vòng ngoài, rồi mới tới cấu hình giải mã ở vòng trong.
+    # Nhờ vậy mỗi mô hình chỉ nạp một lần và **được giải phóng ngay khi xong**,
+    # nên bộ nhớ đỉnh là mô hình lớn nhất chứ không phải tổng mọi mô hình.
+    # Trước đây tất cả cùng nằm trong GPU và mô hình cuối cùng luôn bị tràn.
+    for translator, tgroup in df.groupby("translator", sort=True):
+        model = translators[translator]
+        used_gpu = False
 
-        ckpt = None
-        if ckpt_dir is not None:
-            key = f"{src_lang}-{tgt_lang}__{translator}__{decoding}__{off or 'none'}"
-            ckpt = ckpt_dir / f"{key}.jsonl"
+        for (decoding, off_target), group in tgroup.groupby(
+            ["decoding", "force_wrong_target"], dropna=False
+        ):
+            off = off_target if isinstance(off_target, str) else None
+            cfg = get_decoding(decoding)
+            tag = f"{translator}/{decoding}" + (f"+off{off}" if off else "")
 
-        # Đã dịch xong tổ hợp này ở lần chạy trước -> dùng lại
-        if ckpt is not None and ckpt.exists():
-            cached = pd.read_json(ckpt, lines=True)
-            if len(cached) == len(group):
-                df.loc[group.index, "mt_text"] = cached["mt_text"].to_numpy()
-                print(f"    [da co] bo qua {tag} — dung lai {len(cached)} cau tu checkpoint")
-                continue
-            print(f"    [checkpoint hong] {tag}: co {len(cached)} cau nhung can "
-                  f"{len(group)} — dich lai")
+            ckpt = None
+            if ckpt_dir is not None:
+                key = f"{src_lang}-{tgt_lang}__{translator}__{decoding}__{off or 'none'}"
+                ckpt = ckpt_dir / f"{key}.jsonl"
 
-        print(f"    dich {len(group):>5} cau bang {tag}", flush=True)
-        model = translators[(translator, off)]
-        outputs = model.translate(
-            group["src_text"].tolist(), src_lang, tgt_lang,
-            decoding=cfg, batch_size=batch_size,
-        )
-        df.loc[group.index, "mt_text"] = outputs
+            # Đã dịch xong tổ hợp này ở lần chạy trước -> dùng lại
+            if ckpt is not None and ckpt.exists():
+                cached = pd.read_json(ckpt, lines=True)
+                if len(cached) == len(group):
+                    df.loc[group.index, "mt_text"] = cached["mt_text"].to_numpy()
+                    print(f"    [da co] bo qua {tag} — dung lai {len(cached)} cau "
+                          f"tu checkpoint", flush=True)
+                    continue
+                print(f"    [checkpoint hong] {tag}: co {len(cached)} cau nhung can "
+                      f"{len(group)} — dich lai", flush=True)
 
-        if ckpt is not None:
-            pd.DataFrame({"cand_key": group.index, "mt_text": outputs}).to_json(
-                ckpt, orient="records", lines=True, force_ascii=False)
+            print(f"    dich {len(group):>5} cau bang {tag}", flush=True)
+            used_gpu = True
+            outputs = model.translate(
+                group["src_text"].tolist(), src_lang, tgt_lang,
+                decoding=cfg, batch_size=batch_size, force_wrong_target=off,
+            )
+            df.loc[group.index, "mt_text"] = outputs
+
+            if ckpt is not None:
+                pd.DataFrame({"cand_key": group.index, "mt_text": outputs}).to_json(
+                    ckpt, orient="records", lines=True, force_ascii=False)
+
+        if used_gpu:
+            model.unload()
+            print(f"    [giai phong] {translator}", flush=True)
 
     return df
 

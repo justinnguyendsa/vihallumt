@@ -85,6 +85,18 @@ DECODING_PRESETS: tuple[DecodingConfig, ...] = (
 )
 
 
+def preferred_dtype():
+    """fp16 trên GPU, fp32 trên CPU.
+
+    Mặc định của `from_pretrained` là fp32, tức **gấp đôi** bộ nhớ cần thiết.
+    Với kế hoạch sinh dữ liệu mặc định, riêng khoản này đã ngốn thêm ~5 GB trên
+    GPU 15 GB và là một trong ba nguyên nhân gây tràn bộ nhớ.
+    """
+    import torch
+
+    return torch.float16 if torch.cuda.is_available() else torch.float32
+
+
 class Translator:
     """Lớp cơ sở cho hệ dịch."""
 
@@ -97,8 +109,27 @@ class Translator:
         tgt_lang: str = "VI",
         decoding: DecodingConfig | None = None,
         batch_size: int = 16,
+        force_wrong_target: str | None = None,
     ) -> list[str]:
         raise NotImplementedError
+
+    def unload(self) -> None:
+        """Giải phóng trọng số khỏi GPU.
+
+        **Bắt buộc gọi khi dùng nhiều hệ dịch trong một lượt chạy.** Nếu không,
+        bộ nhớ chiếm dụng là *tổng* của mọi mô hình chứ không phải mô hình lớn
+        nhất, và mô hình nạp sau cùng sẽ tràn — kể cả khi từng mô hình một đều
+        thừa sức vừa GPU.
+        """
+        import gc
+
+        import torch
+
+        self._model = None
+        self._tokenizer = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"{type(self).__name__}(name={self.name!r})"
@@ -139,7 +170,8 @@ class NLLBTranslator(Translator):
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_id, src_lang=code)
 
         if self._model is None:
-            self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id)
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_id, dtype=preferred_dtype())
             self._model = self._model.to("cuda" if torch.cuda.is_available() else "cpu")
             self._model.eval()
 
@@ -150,6 +182,7 @@ class NLLBTranslator(Translator):
         tgt_lang: str = "VI",
         decoding: DecodingConfig | None = None,
         batch_size: int = 16,
+        force_wrong_target: str | None = None,
     ) -> list[str]:
         if not texts:
             return []
@@ -158,7 +191,11 @@ class NLLBTranslator(Translator):
         self._ensure_loaded(src_lang)
         decoding = decoding or DECODING_PRESETS[0]
 
-        effective_target = self.force_wrong_target or tgt_lang
+        # Ép sai ngôn ngữ đích chỉ đổi token BOS lúc sinh, KHÔNG đổi trọng số.
+        # Vì vậy nó là tham số của lần gọi, không phải của mô hình — trước đây
+        # nó nằm ở hàm khởi tạo nên mỗi nhánh off-target lại nạp một bản sao
+        # đầy đủ của cùng bộ trọng số.
+        effective_target = force_wrong_target or self.force_wrong_target or tgt_lang
         bos = self._tokenizer.convert_tokens_to_ids(NLLB_LANG[effective_target.upper()])
 
         out: list[str] = []
@@ -195,7 +232,8 @@ class EnViT5Translator(Translator):
         if self._tokenizer is None:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         if self._model is None:
-            self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id)
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_id, dtype=preferred_dtype())
             self._model = self._model.to("cuda" if torch.cuda.is_available() else "cpu")
             self._model.eval()
 
@@ -219,6 +257,7 @@ class EnViT5Translator(Translator):
         tgt_lang: str = "VI",
         decoding: DecodingConfig | None = None,
         batch_size: int = 16,
+        force_wrong_target: str | None = None,
     ) -> list[str]:
         if not texts:
             return []
@@ -309,6 +348,7 @@ class LLMTranslator(Translator):
         tgt_lang: str = "VI",
         decoding: DecodingConfig | None = None,
         batch_size: int = 8,
+        force_wrong_target: str | None = None,
     ) -> list[str]:
         if not texts:
             return []

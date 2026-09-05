@@ -155,11 +155,15 @@ class _FakeTranslator:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.unloaded = 0
 
     def translate(self, texts, src_lang="EN", tgt_lang="VI", decoding=None,
-                  batch_size=16):
+                  batch_size=16, force_wrong_target=None):
         self.calls += 1
         return [f"dich: {t}" for t in texts]
+
+    def unload(self):
+        self.unloaded += 1
 
 
 def test_checkpoint_prevents_retranslation(build_module, tmp_path, monkeypatch):
@@ -172,7 +176,7 @@ def test_checkpoint_prevents_retranslation(build_module, tmp_path, monkeypatch):
 
     fake = _FakeTranslator()
     monkeypatch.setattr(build_module, "build_translators",
-                        lambda specs: {("nllb600m", None): fake})
+                        lambda specs: {"nllb600m": fake})
 
     df = pd.DataFrame({
         "src_text": [f"source sentence number {i}" for i in range(10)],
@@ -193,7 +197,7 @@ def test_checkpoint_files_are_written(build_module, tmp_path, monkeypatch):
     from vihallumt.corpus.translate import GenerationSpec
 
     monkeypatch.setattr(build_module, "build_translators",
-                        lambda specs: {("nllb600m", None): _FakeTranslator()})
+                        lambda specs: {"nllb600m": _FakeTranslator()})
     df = pd.DataFrame({"src_text": [f"s{i}" for i in range(6)],
                        "src": ["EN"] * 6, "tgt": ["VI"] * 6})
     build_module.translate_pool(df, "EN", "VI", 4, 42,
@@ -210,7 +214,7 @@ def test_corrupt_checkpoint_triggers_retranslation(build_module, tmp_path, monke
 
     fake = _FakeTranslator()
     monkeypatch.setattr(build_module, "build_translators",
-                        lambda specs: {("nllb600m", None): fake})
+                        lambda specs: {"nllb600m": fake})
     df = pd.DataFrame({"src_text": [f"s{i}" for i in range(8)],
                        "src": ["EN"] * 8, "tgt": ["VI"] * 8})
     plan = (GenerationSpec("nllb600m", "greedy", 1.0),)
@@ -233,7 +237,7 @@ def test_no_checkpoint_dir_still_works(build_module, monkeypatch):
     from vihallumt.corpus.translate import GenerationSpec
 
     monkeypatch.setattr(build_module, "build_translators",
-                        lambda specs: {("nllb600m", None): _FakeTranslator()})
+                        lambda specs: {"nllb600m": _FakeTranslator()})
     df = pd.DataFrame({"src_text": ["a b c", "d e f"],
                        "src": ["EN"] * 2, "tgt": ["VI"] * 2})
     out = build_module.translate_pool(df, "EN", "VI", 4, 42,
@@ -264,3 +268,162 @@ def test_importing_bnb_config_is_not_proof_of_availability():
     # Import thành công không nói lên điều gì về việc bitsandbytes có sẵn hay không
     assert BitsAndBytesConfig is not None
     assert isinstance(_bitsandbytes_available(), bool)
+
+
+# ==========================================================================
+# Quản lý bộ nhớ GPU — lỗi đã gây tràn bộ nhớ trên Kaggle
+# ==========================================================================
+
+class _MemoryTrackingTranslator:
+    """Hệ dịch giả, mô phỏng việc chiếm và giải phóng bộ nhớ GPU."""
+
+    def __init__(self, name: str, gb: float) -> None:
+        self.name = name
+        self.gb = gb
+        self.loaded = False
+        self.load_count = 0
+        self.unload_count = 0
+        self.targets_seen: list[str | None] = []
+
+    def translate(self, texts, src_lang="EN", tgt_lang="VI", decoding=None,
+                  batch_size=16, force_wrong_target=None):
+        if not self.loaded:
+            self.loaded = True
+            self.load_count += 1
+        self.targets_seen.append(force_wrong_target)
+        return [f"{self.name}: {t}" for t in texts]
+
+    def unload(self):
+        self.loaded = False
+        self.unload_count += 1
+
+
+def test_model_is_unloaded_after_its_groups_finish(build_module, tmp_path, monkeypatch):
+    """Mô hình phải được giải phóng ngay khi dùng xong.
+
+    Nếu không, bộ nhớ chiếm dụng là TỔNG mọi mô hình chứ không phải mô hình
+    lớn nhất — đúng cách làm tràn 15 GB GPU của Kaggle dù từng mô hình một
+    đều thừa sức vừa.
+    """
+    from vihallumt.corpus.translate import GenerationSpec
+
+    models = {
+        "nllb600m": _MemoryTrackingTranslator("nllb600m", 1.2),
+        "nllb1.3b": _MemoryTrackingTranslator("nllb1.3b", 2.6),
+        "qwen7b": _MemoryTrackingTranslator("qwen7b", 4.5),
+    }
+    monkeypatch.setattr(build_module, "build_translators", lambda specs: models)
+
+    df = pd.DataFrame({"src_text": [f"s{i}" for i in range(30)],
+                       "src": ["EN"] * 30, "tgt": ["VI"] * 30})
+    plan = (
+        GenerationSpec("nllb600m", "greedy", 0.4),
+        GenerationSpec("nllb1.3b", "beam5", 0.3),
+        GenerationSpec("qwen7b", "beam5", 0.3),
+    )
+    build_module.translate_pool(df, "EN", "VI", 8, 42, plan, ckpt_dir=tmp_path)
+
+    for name, m in models.items():
+        assert m.unload_count == 1, f"{name} khong duoc giai phong"
+        assert not m.loaded, f"{name} van con trong bo nho sau khi xong"
+
+
+def test_only_one_model_is_loaded_at_a_time(build_module, tmp_path, monkeypatch):
+    """Đỉnh bộ nhớ phải là mô hình lớn nhất, không phải tổng."""
+    from vihallumt.corpus.translate import GenerationSpec
+
+    models = {n: _MemoryTrackingTranslator(n, gb)
+              for n, gb in [("nllb600m", 1.2), ("nllb1.3b", 2.6), ("qwen7b", 4.5)]}
+    peak = {"gb": 0.0}
+
+    original_translate = _MemoryTrackingTranslator.translate
+
+    def tracking_translate(self, *a, **kw):
+        out = original_translate(self, *a, **kw)
+        peak["gb"] = max(peak["gb"], sum(m.gb for m in models.values() if m.loaded))
+        return out
+
+    monkeypatch.setattr(_MemoryTrackingTranslator, "translate", tracking_translate)
+    monkeypatch.setattr(build_module, "build_translators", lambda specs: models)
+
+    df = pd.DataFrame({"src_text": [f"s{i}" for i in range(30)],
+                       "src": ["EN"] * 30, "tgt": ["VI"] * 30})
+    plan = (GenerationSpec("nllb600m", "greedy", 0.4),
+            GenerationSpec("nllb1.3b", "beam5", 0.3),
+            GenerationSpec("qwen7b", "beam5", 0.3))
+    build_module.translate_pool(df, "EN", "VI", 8, 42, plan, ckpt_dir=tmp_path)
+
+    assert peak["gb"] <= 4.5, (
+        f"dinh bo nho {peak['gb']} GB — dang giu nhieu mo hinh cung luc "
+        f"(tong cua ca ba la 8.3 GB)"
+    )
+
+
+def test_off_target_shares_weights_with_normal_branch(build_module, tmp_path, monkeypatch):
+    """Nhánh ép sai ngôn ngữ đích KHÔNG được nạp bản sao trọng số riêng.
+
+    Ép sai ngôn ngữ chỉ đổi token BOS lúc sinh; trọng số y hệt. Tách thành hai
+    đối tượng khiến GPU giữ hai bản sao của cùng một mô hình 600M.
+    """
+    from vihallumt.corpus.translate import GenerationSpec
+
+    model = _MemoryTrackingTranslator("nllb600m", 1.2)
+    monkeypatch.setattr(build_module, "build_translators",
+                        lambda specs: {"nllb600m": model})
+
+    df = pd.DataFrame({"src_text": [f"s{i}" for i in range(20)],
+                       "src": ["EN"] * 20, "tgt": ["VI"] * 20})
+    plan = (GenerationSpec("nllb600m", "greedy", 0.5),
+            GenerationSpec("nllb600m", "greedy", 0.5, force_wrong_target="ZH"))
+    build_module.translate_pool(df, "EN", "VI", 8, 42, plan, ckpt_dir=tmp_path)
+
+    assert model.load_count == 1, "nap trong so nhieu hon mot lan"
+    # Ca hai nhanh deu chay, va nhanh off-target nhan dung tham so
+    assert None in model.targets_seen
+    assert "ZH" in model.targets_seen
+
+
+def test_build_translators_keys_by_model_name_only(build_module):
+    """Khoá theo tên mô hình, không tách theo force_wrong_target."""
+    from vihallumt.corpus.translate import GenerationSpec
+
+    specs = [GenerationSpec("nllb600m", "greedy", 0.5),
+             GenerationSpec("nllb600m", "greedy", 0.5, force_wrong_target="ZH")]
+    out = build_module.build_translators(specs)
+    assert set(out) == {"nllb600m"}, f"tao {len(out)} doi tuong thay vi 1: {set(out)}"
+
+
+def test_translators_load_in_half_precision_on_gpu():
+    """fp32 la mac dinh cua from_pretrained va ngon gap doi bo nho can thiet."""
+    import torch
+
+    from vihallumt.corpus.translate import preferred_dtype
+
+    expected = torch.float16 if torch.cuda.is_available() else torch.float32
+    assert preferred_dtype() is expected
+
+
+def test_every_translator_implements_unload():
+    from vihallumt.corpus.translate import (
+        EnViT5Translator,
+        LLMTranslator,
+        NLLBTranslator,
+    )
+
+    for cls in (NLLBTranslator, EnViT5Translator, LLMTranslator):
+        assert hasattr(cls, "unload")
+
+
+def test_every_translator_accepts_force_wrong_target():
+    """Chữ ký phải đồng nhất để `translate_pool` gọi được cho mọi hệ dịch."""
+    import inspect
+
+    from vihallumt.corpus.translate import (
+        EnViT5Translator,
+        LLMTranslator,
+        NLLBTranslator,
+    )
+
+    for cls in (NLLBTranslator, EnViT5Translator, LLMTranslator):
+        params = inspect.signature(cls.translate).parameters
+        assert "force_wrong_target" in params, f"{cls.__name__} thieu tham so"
